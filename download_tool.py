@@ -1,5 +1,5 @@
 # Script is modified from https://github.com/generalizable-neural-performer/gnr of Wei Cheng from HKUST
-
+import mmap
 from ast import arg
 import json, os, sys, pip, copy
 from re import sub
@@ -56,6 +56,7 @@ def parse_args():
     parse = argparse.ArgumentParser(description='Download MVImgNet data')
     parse.add_argument('--download_root', type=str, required=True, help='path to store download data')
     parse.add_argument('--force', type=bool, default=False, help='wheather force to download data')
+    parse.add_argument('--password', type=str, default='CUHKSZ-GapLab', help='password to download data')
     # parse.add_argument('--subset', type=str, required=True, help='data subset to download')
 
     args = parse.parse_args()
@@ -77,7 +78,7 @@ def read_hash(path):
         str = f.read()
     return str
 
-def checkHashes(localfile, cloud_hash, localroot, force):
+def checkHashes(localfile, total_length, cloud_hash, localroot, force):
     """
     Synchronize local file with cloud file by hash checking
     (For MVImgNet, the file is on Onedrive for Bussiness, only "quickXorHash" is avalible)
@@ -104,19 +105,27 @@ def checkHashes(localfile, cloud_hash, localroot, force):
 
     # if local file is not deleted
     if os.path.exists(localfile):
-        with open(localfile, 'rb') as lf:
-            content = lf.read()
+        if os.path.getsize(localfile) != total_length:
+            tqdm.write(f"[{os.path.relpath(localfile, localroot)}] local file has incorrect length, updating")
+            return False
+        # if not force:
+        #     tqdm.write(f"[{os.path.relpath(localfile, localroot)}] local file has correct length, skip downloading")
+        #     return True
+        with open(localfile, 'rb') as lf, tqdm(desc=os.path.basename(localfile),
+                total=total_length, unit="bytes", unit_scale=True, unit_divisor=1024) as pbar:
             hash = quickxorhash.quickxorhash()
-            hash.update(content)
-            hashoutput = base64.b64encode(hash.digest()).decode('ascii')
-            # # write local hash backup
-            save_hash(local_hash_bkup, cloud_hash["quickXorHash"])
-            if hashoutput == cloud_hash["quickXorHash"]:
-                tqdm.write(f"[{os.path.relpath(localfile, localroot)}] local file is up-to-date, skip downloading")
-                return True
-            else:
-                tqdm.write(f"[{os.path.relpath(localfile, localroot)}] local file is out-of-date, updating")
-                return False
+            while content := lf.read(2097152):
+                hash.update(content)
+                pbar.update(len(content))
+        hashoutput = base64.b64encode(hash.digest()).decode('ascii')
+        # # write local hash backup
+        save_hash(local_hash_bkup, cloud_hash["quickXorHash"])
+        if hashoutput == cloud_hash["quickXorHash"]:
+            tqdm.write(f"[{os.path.relpath(localfile, localroot)}] local file is up-to-date, skip downloading")
+            return True
+        else:
+            tqdm.write(f"[{os.path.relpath(localfile, localroot)}] local file is out-of-date, updating")
+            return False
     else:
         if os.path.isfile(local_hash_bkup):
             # read hashcode and compare
@@ -245,23 +254,21 @@ def getFiles(originalUrl, download_path, force, download_root=None, req=None, la
             filemeta = json.loads(reqf.text)
 
             url, name, hash = filemeta["@content.downloadUrl"], filemeta["name"], filemeta["file"]["hashes"]
-            r = requests.get(url, stream = True) 
-            total_length = int(r.headers.get('content-length', 0))
             local_file = os.path.join(download_path, name)
-            
+            total_length = int(filemeta["size"])
             # Check hash code of local file and cloud file
-            if not checkHashes(local_file, hash, download_root, force):            
+            if not checkHashes(local_file, total_length, hash, download_root, force):
                 with open(os.path.join(download_path, name), 'wb') as f, \
                     tqdm(desc=os.path.relpath(local_file, download_root),total=total_length,
                          unit='iB',unit_scale=True,unit_divisor=1024) as bar:
+                    r = requests.get(url, stream=True)
+                    content_length = r.headers.get('content-length')
+                    assert content_length is None or int(content_length) == total_length
                     for chunk in r.iter_content(chunk_size = 1024): 
                         if chunk: 
                             size = f.write(chunk)
                             bar.update(size)
 
-
-pheader = {}
-url = ""
 
 async def fetch_with_pwd(iurl, password):
     """
@@ -271,7 +278,6 @@ async def fetch_with_pwd(iurl, password):
         iurl: input share folder url
         password: password of the share folder
     """
-    global pheader, url
     browser = await launch(options={'args': ['--no-sandbox']})
     page = await browser.newPage()
     await page.goto(iurl, {'waitUntil': 'networkidle0'})
@@ -293,17 +299,18 @@ async def fetch_with_pwd(iurl, password):
         coo = "{}={};".format(__cookie.get("name"), __cookie.get("value"))
         pheader += coo
     await browser.close()
+    return pheader, url
 
-def havePwdGetFiles(iurl, password, download_path, force):
-    global header
-    asyncio.get_event_loop().run_until_complete(fetch_with_pwd(iurl, password))
+async def havePwdGetFiles(iurl, password, download_path, force):
+    pheader, url = await fetch_with_pwd(iurl, password)
     header['cookie'] = pheader
     getFiles(url, download_path, force)
 
-
-if __name__ == "__main__":
-    args = parse_args()
+async def main(args):
     download_root = args.download_root
     force = args.force
-    pwd = input("Please input MVImgNet password, or contact with the author for data access: \n")
-    havePwdGetFiles( urls["mvimgnet"], pwd, download_root , force )
+    pwd = args.password or input("Please input MVImgNet password, or contact with the author for data access: \n")
+    await havePwdGetFiles( urls["mvimgnet"], pwd, download_root , force )
+
+if __name__ == "__main__":
+    asyncio.run(main(parse_args()))
