@@ -112,12 +112,12 @@ def checkHashes(localfile, total_length, cloud_hash, localroot, force):
         #     tqdm.write(f"[{os.path.relpath(localfile, localroot)}] local file has correct length, skip downloading")
         #     return True
         with open(localfile, 'rb') as lf, tqdm(desc=os.path.basename(localfile),
-                total=total_length, unit="bytes", unit_scale=True, unit_divisor=1024) as pbar:
-            hash = quickxorhash.quickxorhash()
+                total=total_length, unit="bytes", unit_scale=True, unit_divisor=1024, leave=False) as pbar:
+            xhash = quickxorhash.quickxorhash()
             while content := lf.read(2097152):
-                hash.update(content)
+                xhash.update(content)
                 pbar.update(len(content))
-        hashoutput = base64.b64encode(hash.digest()).decode('ascii')
+        hashoutput = base64.b64encode(xhash.digest()).decode('ascii')
         # # write local hash backup
         save_hash(local_hash_bkup, cloud_hash["quickXorHash"])
         if hashoutput == cloud_hash["quickXorHash"]:
